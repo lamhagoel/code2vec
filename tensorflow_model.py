@@ -211,8 +211,14 @@ class Code2VecModel(Code2VecModelBase):
                 self.vocab_type_to_tf_variable_name_mapping[VocabType.Target],
                 shape=(self.vocabs.target_vocab.size, self.config.TARGET_EMBEDDINGS_SIZE), dtype=tf.float32,
                 initializer=tf.compat.v1.initializers.variance_scaling(scale=1.0, mode='fan_out', distribution="uniform"))
-            attention_param = tf.compat.v1.get_variable(
-                'ATTENTION',
+            attention_query = tf.compat.v1.get_variable(
+                'attn_query',
+                shape=(self.config.CODE_VECTOR_SIZE, 1), dtype=tf.float32)
+            attention_key = tf.compat.v1.get_variable(
+                'attn_key',
+                shape=(self.config.CODE_VECTOR_SIZE, 1), dtype=tf.float32)
+            attention_val = tf.compat.v1.get_variable(
+                'attn_val',
                 shape=(self.config.CODE_VECTOR_SIZE, 1), dtype=tf.float32)
             paths_vocab = tf.compat.v1.get_variable(
                 self.vocab_type_to_tf_variable_name_mapping[VocabType.Path],
@@ -220,7 +226,7 @@ class Code2VecModel(Code2VecModelBase):
                 initializer=tf.compat.v1.initializers.variance_scaling(scale=1.0, mode='fan_out', distribution="uniform"))
 
             code_vectors, _ = self._calculate_weighted_contexts(
-                tokens_vocab, paths_vocab, attention_param, input_tensors.path_source_token_indices,
+                tokens_vocab, paths_vocab, attention_query, attention_key, attention_val, input_tensors.path_source_token_indices,
                 input_tensors.path_indices, input_tensors.path_target_token_indices, input_tensors.context_valid_mask)
 
             logits = tf.matmul(code_vectors, targets_vocab, transpose_b=True)
@@ -233,7 +239,7 @@ class Code2VecModel(Code2VecModelBase):
 
         return optimizer, loss
 
-    def _calculate_weighted_contexts(self, tokens_vocab, paths_vocab, attention_param, source_input, path_input,
+    def _calculate_weighted_contexts(self, tokens_vocab, paths_vocab, attention_query, attention_key, attention_val, source_input, path_input,
                                      target_input, valid_mask, is_evaluating=False):
         source_word_embed = tf.nn.embedding_lookup(params=tokens_vocab, ids=source_input)  # (batch, max_contexts, dim)
         path_embed = tf.nn.embedding_lookup(params=paths_vocab, ids=path_input)  # (batch, max_contexts, dim)
@@ -251,7 +257,13 @@ class Code2VecModel(Code2VecModelBase):
 
         flat_embed = tf.tanh(tf.matmul(flat_embed, transform_param))  # (batch * max_contexts, dim * 3)
 
-        contexts_weights = tf.matmul(flat_embed, attention_param)  # (batch * max_contexts, 1)
+        query = tf.matmul(flat_embed, attention_query)  # (batch * max_contexts, 1)
+        key = tf.matmul(flat_embed, attention_key)  # (batch * max_contexts, 1)
+        val = tf.matmul(flat_embed, attention_val)  # (batch * max_contexts, 1)
+        attn = tf.nn.softmax(tf.matmul(query, tf.transpose(key)), axis=1) # (batch * max_contexts, batch * max_contexts)
+        contexts_weights = tf.matmul(attn, val) # (batch * max_contexts, 1)
+
+        # contexts_weights = tf.matmul(flat_embed, attention_param)  # (batch * max_contexts, 1)
         batched_contexts_weights = tf.reshape(
             contexts_weights, [-1, self.config.MAX_CONTEXTS, 1])  # (batch, max_contexts, 1)
         mask = tf.math.log(valid_mask)  # (batch, max_contexts)
@@ -274,8 +286,14 @@ class Code2VecModel(Code2VecModelBase):
                 self.vocab_type_to_tf_variable_name_mapping[VocabType.Target],
                 shape=(self.vocabs.target_vocab.size, self.config.TARGET_EMBEDDINGS_SIZE),
                 dtype=tf.float32, trainable=False)
-            attention_param = tf.compat.v1.get_variable(
-                'ATTENTION', shape=(self.config.context_vector_size, 1),
+            attention_query = tf.compat.v1.get_variable(
+                'attn_query', shape=(self.config.context_vector_size, 1),
+                dtype=tf.float32, trainable=False)
+            attention_key = tf.compat.v1.get_variable(
+                'attn_key', shape=(self.config.context_vector_size, 1),
+                dtype=tf.float32, trainable=False)
+            attention_val = tf.compat.v1.get_variable(
+                'attn_val', shape=(self.config.context_vector_size, 1),
                 dtype=tf.float32, trainable=False)
             paths_vocab = tf.compat.v1.get_variable(
                 self.vocab_type_to_tf_variable_name_mapping[VocabType.Path],
@@ -290,7 +308,7 @@ class Code2VecModel(Code2VecModelBase):
             # shape of (batch, max_contexts) for the other tensors
 
             code_vectors, attention_weights = self._calculate_weighted_contexts(
-                tokens_vocab, paths_vocab, attention_param, input_tensors.path_source_token_indices,
+                tokens_vocab, paths_vocab, attention_query, attention_key, attention_val, input_tensors.path_source_token_indices,
                 input_tensors.path_indices, input_tensors.path_target_token_indices,
                 input_tensors.context_valid_mask, is_evaluating=True)
 
